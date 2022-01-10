@@ -8,6 +8,7 @@
 #include "dm-bio-prison-v2.h"
 #include "dm-bio-record.h"
 #include "dm-cache-metadata.h"
+#include "dm-cache-abt.h"
 
 #include <linux/dm-io.h>
 #include <linux/dm-kcopyd.h>
@@ -482,6 +483,8 @@ struct cache {
 	struct batcher committer;
 
 	struct rw_semaphore background_work_lock;
+
+	struct adaptive_bit_tree *abt;
 };
 
 struct per_bio_data {
@@ -720,33 +723,54 @@ static bool is_dirty(struct cache *cache, dm_cblock_t b)
 	return test_bit(from_cblock(b), cache->dirty_bitset);
 }
 
-static void set_dirty(struct cache *cache, dm_cblock_t cblock)
+static void set_dirty(struct cache *cache, dm_cblock_t cblock, dm_oblock_t oblock)
 {
+	unsigned long flags;
+	spin_lock_irqsave(&cache->abt->cbt->lock, flags);
+
 	if (!test_and_set_bit(from_cblock(cblock), cache->dirty_bitset)) {
 		atomic_inc(&cache->nr_dirty);
 		policy_set_dirty(cache->policy, cblock);
+
+		cbt_set_dirty(cache->abt->cbt, oblock);
 	}
+
+	spin_unlock_irqrestore(&cache->abt->cbt->lock, flags);
 }
 
 /*
  * These two are called when setting after migrations to force the policy
  * and dirty bitset to be in sync.
  */
-static void force_set_dirty(struct cache *cache, dm_cblock_t cblock)
+static void force_set_dirty(struct cache *cache, dm_cblock_t cblock, dm_oblock_t oblock)
 {
-	if (!test_and_set_bit(from_cblock(cblock), cache->dirty_bitset))
+	unsigned long flags;
+	spin_lock_irqsave(&cache->abt->cbt->lock, flags);
+
+	if (!test_and_set_bit(from_cblock(cblock), cache->dirty_bitset)) {
 		atomic_inc(&cache->nr_dirty);
+
+		cbt_set_dirty(cache->abt->cbt, oblock);
+	}
 	policy_set_dirty(cache->policy, cblock);
+
+	spin_unlock_irqrestore(&cache->abt->cbt->lock, flags);
 }
 
-static void force_clear_dirty(struct cache *cache, dm_cblock_t cblock)
+static void force_clear_dirty(struct cache *cache, dm_cblock_t cblock, dm_oblock_t oblock)
 {
+	unsigned long flags;
+	spin_lock_irqsave(&cache->abt->cbt->lock, flags);
+
 	if (test_and_clear_bit(from_cblock(cblock), cache->dirty_bitset)) {
 		if (atomic_dec_return(&cache->nr_dirty) == 0)
 			dm_table_event(cache->ti->table);
+	    cbt_set_clean(cache->abt->cbt, oblock);
 	}
 
 	policy_clear_dirty(cache->policy, cblock);
+
+	spin_unlock_irqrestore(&cache->abt->cbt->lock, flags);
 }
 
 /*----------------------------------------------------------------*/
@@ -887,7 +911,7 @@ static void remap_to_cache_dirty(struct cache *cache, struct bio *bio,
 	check_if_tick_bio_needed(cache, bio);
 	remap_to_cache(cache, bio, cblock);
 	if (bio_data_dir(bio) == WRITE) {
-		set_dirty(cache, cblock);
+		set_dirty(cache, cblock, oblock);
 		clear_discard(cache, oblock_to_dblock(cache, oblock));
 	}
 }
@@ -1325,6 +1349,7 @@ static void mg_complete(struct dm_cache_migration *mg, bool success)
 	struct cache *cache = mg->cache;
 	struct policy_work *op = mg->op;
 	dm_cblock_t cblock = op->cblock;
+	dm_oblock_t oblock = op->oblock;
 
 	if (success)
 		update_stats(&cache->stats, op->op);
@@ -1337,13 +1362,13 @@ static void mg_complete(struct dm_cache_migration *mg, bool success)
 		if (mg->overwrite_bio) {
 			int err = 0;
 			if (success)
-				force_set_dirty(cache, cblock);
+				force_set_dirty(cache, cblock, oblock);
 			else
 				err = (mg->k.input ? : -EIO);
 			bio_endio(mg->overwrite_bio, err);
 		} else {
 			if (success)
-				force_clear_dirty(cache, cblock);
+				force_clear_dirty(cache, cblock, oblock);
 			dec_io_migrations(cache);
 		}
 		break;
@@ -1353,14 +1378,14 @@ static void mg_complete(struct dm_cache_migration *mg, bool success)
 		 * We clear dirty here to update the nr_dirty counter.
 		 */
 		if (success)
-			force_clear_dirty(cache, cblock);
+			force_clear_dirty(cache, cblock, oblock);
 		policy_complete_background_work(cache->policy, op, success);
 		dec_io_migrations(cache);
 		break;
 
 	case POLICY_WRITEBACK:
 		if (success)
-			force_clear_dirty(cache, cblock);
+			force_clear_dirty(cache, cblock, oblock);
 		policy_complete_background_work(cache->policy, op, success);
 		dec_io_migrations(cache);
 		break;
@@ -2743,6 +2768,8 @@ static int cache_create(struct cache_args *ca, struct cache **result)
 
 	init_rwsem(&cache->background_work_lock);
 	prevent_background_work(cache);
+
+	cache->abt = abt_create(4, cache->origin_blocks);
 
 	*result = cache;
 	return 0;
