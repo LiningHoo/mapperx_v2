@@ -40,6 +40,7 @@ void cbt_set_clean(struct complete_bit_tree* cbt, int block_id) {
     while(idx >= 0) {
         cbt->bitset[idx] = false;
         idx = get_parent_idx(cbt->degree, idx);
+        if (idx < 0) break;
         for(i=1; i<=cbt->degree; ++i) {
             child = get_child_idx(cbt->degree, idx, i);
             if (cbt->bitset[child]) {
