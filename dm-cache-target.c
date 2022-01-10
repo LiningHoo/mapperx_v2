@@ -732,7 +732,7 @@ static void set_dirty(struct cache *cache, dm_cblock_t cblock, dm_oblock_t obloc
 		atomic_inc(&cache->nr_dirty);
 		policy_set_dirty(cache->policy, cblock);
 
-		cbt_set_dirty(cache->abt->cbt, oblock);
+		abt_set_dirty(cache->abt, oblock);
 	}
 
 	spin_unlock_irqrestore(&cache->abt->cbt->lock, flags);
@@ -750,7 +750,7 @@ static void force_set_dirty(struct cache *cache, dm_cblock_t cblock, dm_oblock_t
 	if (!test_and_set_bit(from_cblock(cblock), cache->dirty_bitset)) {
 		atomic_inc(&cache->nr_dirty);
 
-		cbt_set_dirty(cache->abt->cbt, oblock);
+		abt_set_dirty(cache->abt, oblock);
 	}
 	policy_set_dirty(cache->policy, cblock);
 
@@ -765,7 +765,7 @@ static void force_clear_dirty(struct cache *cache, dm_cblock_t cblock, dm_oblock
 	if (test_and_clear_bit(from_cblock(cblock), cache->dirty_bitset)) {
 		if (atomic_dec_return(&cache->nr_dirty) == 0)
 			dm_table_event(cache->ti->table);
-	    cbt_set_clean(cache->abt->cbt, oblock);
+	    abt_set_clean(cache->abt, oblock);
 	}
 
 	policy_clear_dirty(cache->policy, cblock);
@@ -2118,6 +2118,8 @@ static void check_migrations(struct work_struct *ws)
 static void destroy(struct cache *cache)
 {
 	unsigned i;
+
+	abt_destroy(cache->abt);
 
 	mempool_destroy(cache->migration_pool);
 

@@ -21,7 +21,8 @@ struct adaptive_bit_tree {
 };
 
 struct adaptive_bit_tree* abt_create(int degree, int nr_blocks);
-void cbt_set_dirty(struct complete_bit_tree* cbt, int block_id);
-void cbt_set_clean(struct complete_bit_tree* cbt, int block_id);
+void abt_set_dirty(struct adaptive_bit_tree* abt, int block_id);
+void abt_set_clean(struct adaptive_bit_tree* abt, int block_id);
+void abt_destroy(struct adaptive_bit_tree* abt);
 
 #endif
