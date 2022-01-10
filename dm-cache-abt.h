@@ -16,6 +16,8 @@ struct complete_bit_tree* cbt_create(int degree, int nr_blocks);
 struct adaptive_bit_tree {
     struct complete_bit_tree* cbt;
     int degree;
+    int size;
+    bool *is_leaf;
 };
 
 struct adaptive_bit_tree* abt_create(int degree, int nr_blocks);

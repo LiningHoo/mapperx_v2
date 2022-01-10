@@ -57,6 +57,8 @@ struct adaptive_bit_tree* abt_create(int degree, int nr_blocks) {
     struct adaptive_bit_tree* abt;
     abt = vmalloc(sizeof(struct adaptive_bit_tree*));
     abt->cbt = cbt_create(degree, nr_blocks);
+    abt->size = abt->cbt->size;
+    abt->is_leaf = (bool*)vmalloc(sizeof(bool)*abt->size);
     printk(KERN_INFO "abt create finish");
     return abt;
 }
