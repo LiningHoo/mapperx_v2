@@ -2,6 +2,9 @@
 #define DM_CACHE_ABT_H
 
 #include <linux/spinlock.h>
+#include <linux/workqueue.h>
+
+#include "dm-cache-hashmap.h"
 
 struct complete_bit_tree {
     bool *bitset;
@@ -18,6 +21,8 @@ struct adaptive_bit_tree {
     int degree;
     int size;
     bool *is_leaf;
+
+    struct delayed_work periodic_adjust_work;
 };
 
 struct adaptive_bit_tree* abt_create(int degree, int nr_blocks);

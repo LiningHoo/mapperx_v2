@@ -1,5 +1,4 @@
 #include <linux/vmalloc.h>
-#include <linux/workqueue.h>
 
 #include "dm-cache-abt.h"
 
@@ -11,8 +10,6 @@ int get_child_idx(int degree, int idx, int nth);
 void abt_persistent_dirty(struct adaptive_bit_tree* abt, int idx);
 void abt_persistent_clean(struct adaptive_bit_tree* abt, int idx);
 void abt_periodic_adjust(struct work_struct *work);
-
-DECLARE_DELAYED_WORK(abt_periodic_adjust_work, abt_periodic_adjust);
 
 struct complete_bit_tree* cbt_create(int degree, int nr_blocks) {
     struct complete_bit_tree* cbt;
@@ -76,13 +73,17 @@ exit:
 
 struct adaptive_bit_tree* abt_create(int degree, int nr_blocks) {
     struct adaptive_bit_tree* abt;
+
+    test_hashmap();
+
     abt = vmalloc(sizeof(struct adaptive_bit_tree*));
     abt->cbt = cbt_create(degree, nr_blocks);
     abt->size = abt->cbt->size;
     abt->is_leaf = (bool*)vmalloc(sizeof(bool)*abt->size);
     memset(abt->is_leaf, 0, sizeof(bool)*abt->size);
     abt->is_leaf[0] = true;
-    schedule_delayed_work(&abt_periodic_adjust_work, 1 * HZ);
+    INIT_DELAYED_WORK(&abt->periodic_adjust_work, abt_periodic_adjust);
+    schedule_delayed_work(&abt->periodic_adjust_work, 1 * HZ);
     printk(KERN_INFO "abt create finish");
     return abt;
 }
@@ -136,11 +137,12 @@ void test_get_idx_from_block_id(int degree, int nr_blocks, int level_num) {
 }
 
 void abt_periodic_adjust(struct work_struct *work) {
-    printk(KERN_INFO "tick di da");
-    schedule_delayed_work(&abt_periodic_adjust_work, 1 * HZ);
+    struct adaptive_bit_tree* abt = container_of(work, struct adaptive_bit_tree, periodic_adjust_work);
+    printk(KERN_INFO "di da, level num: %d", abt->cbt->level_num);
+    schedule_delayed_work(&abt->periodic_adjust_work, 1 * HZ);
 }
 
 void abt_destroy(struct adaptive_bit_tree* abt) {
-    cancel_delayed_work_sync(&abt_periodic_adjust_work);
+    cancel_delayed_work_sync(&abt->periodic_adjust_work);
 }
 
