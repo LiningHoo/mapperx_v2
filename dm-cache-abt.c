@@ -20,6 +20,8 @@ struct complete_bit_tree* cbt_create(int degree, int nr_blocks) {
     cbt->size = get_idx_from_block_id(degree, nr_blocks-1, cbt->level_num) + 1;
     cbt->bitset = (bool*)vmalloc(sizeof(bool)*cbt->size);
     memset(cbt->bitset, 0, sizeof(bool)*cbt->size);
+    cbt->writes = (int*)vmalloc(sizeof(int)*cbt->size);
+    memset(cbt->writes, 0, sizeof(int)*cbt->size);
     spin_lock_init(&cbt->lock);
     printk(KERN_INFO "nr_blocks=%d, level_num=%d", nr_blocks, cbt->level_num);
     return cbt;
@@ -41,9 +43,11 @@ void abt_set_dirty(struct adaptive_bit_tree* abt, int block_id) {
         // if (idx > 0 && idx <= cbt->degree) 
         //     printk(KERN_INFO "block_id=%d, idx=%d", block_id, idx);
         abt->cbt->bitset[idx] = true;
-        if (abt->is_leaf[idx]) {
-            abt_persistent_dirty(abt, idx);
-        }
+        abt->cbt->writes[idx] += 1;
+        printk(KERN_INFO "cbt idx %d, writes %d times", idx, abt->cbt->writes[idx]);
+        // if (hashmap_exists(&abt->leaves, idx)) {
+            // abt_persistent_dirty(abt, idx);
+        // }
         idx = get_parent_idx(abt->cbt->degree, idx);
     }
 }
@@ -54,9 +58,9 @@ void abt_set_clean(struct adaptive_bit_tree* abt, int block_id) {
     idx = get_idx_from_block_id(abt->cbt->degree, block_id, abt->cbt->level_num);
     while(idx >= 0) {
         abt->cbt->bitset[idx] = false;
-        if (abt->is_leaf[idx]) {
-            abt_persistent_clean(abt, idx);
-        }
+        // if (hashmap_exists(&abt->leaves, idx)) {
+            // abt_persistent_clean(abt, idx);
+        // }
         idx = get_parent_idx(abt->cbt->degree, idx);
         if (idx < 0) break;
         for(i=1; i<=abt->cbt->degree; ++i) {
@@ -74,14 +78,11 @@ exit:
 struct adaptive_bit_tree* abt_create(int degree, int nr_blocks) {
     struct adaptive_bit_tree* abt;
 
-    test_hashmap();
-
     abt = vmalloc(sizeof(struct adaptive_bit_tree*));
     abt->cbt = cbt_create(degree, nr_blocks);
     abt->size = abt->cbt->size;
-    abt->is_leaf = (bool*)vmalloc(sizeof(bool)*abt->size);
-    memset(abt->is_leaf, 0, sizeof(bool)*abt->size);
-    abt->is_leaf[0] = true;
+    hashmap_init(&abt->leaves, 1024);
+    hashmap_add(&abt->leaves, 0, NULL);
     INIT_DELAYED_WORK(&abt->periodic_adjust_work, abt_periodic_adjust);
     schedule_delayed_work(&abt->periodic_adjust_work, 1 * HZ);
     printk(KERN_INFO "abt create finish");
@@ -138,7 +139,10 @@ void test_get_idx_from_block_id(int degree, int nr_blocks, int level_num) {
 
 void abt_periodic_adjust(struct work_struct *work) {
     struct adaptive_bit_tree* abt = container_of(work, struct adaptive_bit_tree, periodic_adjust_work);
-    printk(KERN_INFO "di da, level num: %d", abt->cbt->level_num);
+
+    memset(abt->cbt->writes, 0, sizeof(int)*abt->cbt->size);
+    printk(KERN_INFO "writes periodic clear done");
+
     schedule_delayed_work(&abt->periodic_adjust_work, 1 * HZ);
 }
 
