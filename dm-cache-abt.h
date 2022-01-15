@@ -11,7 +11,7 @@ struct complete_bit_tree {
     int degree;
     int size;
     int level_num;
-    int *writes;
+    int *metadata_writes;
     spinlock_t lock;
 };
 
@@ -21,6 +21,8 @@ struct adaptive_bit_tree {
     struct complete_bit_tree* cbt;
     int degree;
     int size;
+    int total_writes;
+    int total_metadata_writes;
     struct hashmap leaves;
 
     struct delayed_work periodic_adjust_work;

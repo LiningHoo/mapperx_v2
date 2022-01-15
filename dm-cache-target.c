@@ -2848,6 +2848,8 @@ static int cache_map(struct dm_target *ti, struct bio *bio)
 	dm_oblock_t block = get_bio_block(cache, bio);
 	size_t pb_data_size = get_per_bio_data_size(cache);
 
+	cache->abt->total_writes += 1;
+
 	init_per_bio_data(bio, pb_data_size);
 	if (unlikely(from_oblock(block) >= from_oblock(cache->origin_blocks))) {
 		/*

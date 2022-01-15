@@ -10,6 +10,8 @@ int get_child_idx(int degree, int idx, int nth);
 void abt_persistent_dirty(struct adaptive_bit_tree* abt, int idx);
 void abt_persistent_clean(struct adaptive_bit_tree* abt, int idx);
 void abt_periodic_adjust(struct work_struct *work);
+int find_most_write_parent_idx(struct adaptive_bit_tree* abt);
+int find_least_write_idx(struct adaptive_bit_tree* abt);
 
 struct complete_bit_tree* cbt_create(int degree, int nr_blocks) {
     struct complete_bit_tree* cbt;
@@ -20,19 +22,23 @@ struct complete_bit_tree* cbt_create(int degree, int nr_blocks) {
     cbt->size = get_idx_from_block_id(degree, nr_blocks-1, cbt->level_num) + 1;
     cbt->bitset = (bool*)vmalloc(sizeof(bool)*cbt->size);
     memset(cbt->bitset, 0, sizeof(bool)*cbt->size);
-    cbt->writes = (int*)vmalloc(sizeof(int)*cbt->size);
-    memset(cbt->writes, 0, sizeof(int)*cbt->size);
+    cbt->metadata_writes = (int*)vmalloc(sizeof(int)*cbt->size);
+    memset(cbt->metadata_writes, 0, sizeof(int)*cbt->size);
     spin_lock_init(&cbt->lock);
     printk(KERN_INFO "nr_blocks=%d, level_num=%d", nr_blocks, cbt->level_num);
     return cbt;
 }
 
 void abt_persistent_dirty(struct adaptive_bit_tree* abt, int idx) {
-    printk(KERN_INFO "abt presistent dirty, idx=%d", idx);
+    abt->cbt->metadata_writes[idx] += 1;
+    abt->total_metadata_writes += 1;
+    // printk(KERN_INFO "abt presistent dirty, idx=%d", idx);
 }
 
 void abt_persistent_clean(struct adaptive_bit_tree* abt, int idx) {
-    printk(KERN_INFO "abt presistent clean, idx=%d", idx);
+    abt->cbt->metadata_writes[idx] += 1;
+    abt->total_metadata_writes += 1;
+    // printk(KERN_INFO "abt presistent clean, idx=%d", idx);
 }
 
 void abt_set_dirty(struct adaptive_bit_tree* abt, int block_id) {
@@ -40,14 +46,10 @@ void abt_set_dirty(struct adaptive_bit_tree* abt, int block_id) {
     
     idx = get_idx_from_block_id(abt->cbt->degree, block_id, abt->cbt->level_num);
     while(idx >= 0) {
-        // if (idx > 0 && idx <= cbt->degree) 
-        //     printk(KERN_INFO "block_id=%d, idx=%d", block_id, idx);
         abt->cbt->bitset[idx] = true;
-        abt->cbt->writes[idx] += 1;
-        printk(KERN_INFO "cbt idx %d, writes %d times", idx, abt->cbt->writes[idx]);
-        // if (hashmap_exists(&abt->leaves, idx)) {
-            // abt_persistent_dirty(abt, idx);
-        // }
+        if (hashmap_exists(&abt->leaves, idx)) {
+            abt_persistent_dirty(abt, idx);
+        }
         idx = get_parent_idx(abt->cbt->degree, idx);
     }
 }
@@ -58,15 +60,14 @@ void abt_set_clean(struct adaptive_bit_tree* abt, int block_id) {
     idx = get_idx_from_block_id(abt->cbt->degree, block_id, abt->cbt->level_num);
     while(idx >= 0) {
         abt->cbt->bitset[idx] = false;
-        // if (hashmap_exists(&abt->leaves, idx)) {
-            // abt_persistent_clean(abt, idx);
-        // }
+        if (hashmap_exists(&abt->leaves, idx)) {
+            abt_persistent_clean(abt, idx);
+        }
         idx = get_parent_idx(abt->cbt->degree, idx);
         if (idx < 0) break;
         for(i=1; i<=abt->cbt->degree; ++i) {
             child = get_child_idx(abt->cbt->degree, idx, i);
             if (abt->cbt->bitset[child]) {
-                // printk(KERN_INFO "least dirty idx=%d, block_id=%d", idx, block_id);
                 goto exit;
             }
         }
@@ -84,6 +85,8 @@ struct adaptive_bit_tree* abt_create(int degree, int nr_blocks) {
     hashmap_init(&abt->leaves, 1024);
     hashmap_add(&abt->leaves, 0, NULL);
     INIT_DELAYED_WORK(&abt->periodic_adjust_work, abt_periodic_adjust);
+    abt->total_writes = 0;
+    abt->total_metadata_writes = 0;
     schedule_delayed_work(&abt->periodic_adjust_work, 1 * HZ);
     printk(KERN_INFO "abt create finish");
     return abt;
@@ -140,9 +143,16 @@ void test_get_idx_from_block_id(int degree, int nr_blocks, int level_num) {
 void abt_periodic_adjust(struct work_struct *work) {
     struct adaptive_bit_tree* abt = container_of(work, struct adaptive_bit_tree, periodic_adjust_work);
 
-    memset(abt->cbt->writes, 0, sizeof(int)*abt->cbt->size);
-    printk(KERN_INFO "writes periodic clear done");
+    printk(KERN_INFO "total: %d, metadata: %d", abt->total_writes, abt->total_metadata_writes);
 
+    int most_writes_parent_idx = find_most_write_parent_idx(abt);
+    int least_writes_idx = find_least_write_idx(abt);
+
+    printk(KERN_INFO "most: %d, least: %d", most_writes_parent_idx, least_writes_idx);
+
+    memset(abt->cbt->metadata_writes, 0, sizeof(int)*abt->cbt->size);
+    abt->total_writes = 0;
+    abt->total_metadata_writes = 0;
     schedule_delayed_work(&abt->periodic_adjust_work, 1 * HZ);
 }
 
@@ -150,3 +160,38 @@ void abt_destroy(struct adaptive_bit_tree* abt) {
     cancel_delayed_work_sync(&abt->periodic_adjust_work);
 }
 
+int find_most_write_parent_idx(struct adaptive_bit_tree* abt) {
+    int i, parent_idx;
+    int most_writes = 0, idx = -1;
+    struct hashmap_value* obj;
+
+    for (i=0; i<abt->leaves.bucket_num; ++i) {
+        hlist_for_each_entry(obj, &abt->leaves.hlists[i], node) {
+            parent_idx = get_parent_idx(abt->degree, obj->key);
+            if (parent_idx < 0) return -1;
+            if (abt->cbt->metadata_writes[parent_idx] >= most_writes) {
+                most_writes = abt->cbt->metadata_writes[parent_idx];
+                idx = parent_idx;
+            }
+        }
+    }
+
+    return idx;
+}
+
+int find_least_write_idx(struct adaptive_bit_tree* abt) {
+    int i;
+    int least_writes = INT_MAX, idx = -1;
+    struct hashmap_value* obj;
+
+    for (i=0; i<abt->leaves.bucket_num; ++i) {
+        hlist_for_each_entry(obj, &abt->leaves.hlists[i], node) {
+            if (abt->cbt->metadata_writes[obj->key] <= least_writes) {
+                least_writes = abt->cbt->metadata_writes[obj->key];
+                idx = obj->key;
+            }
+        }
+    }
+
+    return idx;
+}
