@@ -67,6 +67,9 @@ void abt_set_clean(struct adaptive_bit_tree* abt, int block_id) {
         if (idx < 0) break;
         for(i=1; i<=abt->cbt->degree; ++i) {
             child = get_child_idx(abt->cbt->degree, idx, i);
+            if (child >= abt->size) {
+                break;
+            }
             if (abt->cbt->bitset[child]) {
                 goto exit;
             }
@@ -81,12 +84,14 @@ struct adaptive_bit_tree* abt_create(int degree, int nr_blocks) {
 
     abt = vmalloc(sizeof(struct adaptive_bit_tree*));
     abt->cbt = cbt_create(degree, nr_blocks);
+    abt->degree = abt->cbt->degree;
     abt->size = abt->cbt->size;
     hashmap_init(&abt->leaves, 1024);
     hashmap_add(&abt->leaves, 0, NULL);
     INIT_DELAYED_WORK(&abt->periodic_adjust_work, abt_periodic_adjust);
     abt->total_writes = 0;
     abt->total_metadata_writes = 0;
+    abt->sla = 100;
     schedule_delayed_work(&abt->periodic_adjust_work, 1 * HZ);
     printk(KERN_INFO "abt create finish");
     return abt;
@@ -141,15 +146,49 @@ void test_get_idx_from_block_id(int degree, int nr_blocks, int level_num) {
 }
 
 void abt_periodic_adjust(struct work_struct *work) {
+    bool dirty;
+    int i, idx;
+    int most_writes_parent_idx, least_writes_idx, child;
     struct adaptive_bit_tree* abt = container_of(work, struct adaptive_bit_tree, periodic_adjust_work);
 
     printk(KERN_INFO "total: %d, metadata: %d", abt->total_writes, abt->total_metadata_writes);
 
-    int most_writes_parent_idx = find_most_write_parent_idx(abt);
-    int least_writes_idx = find_least_write_idx(abt);
+    most_writes_parent_idx = find_most_write_parent_idx(abt);
+    least_writes_idx = find_least_write_idx(abt);
+
+    if (abt->total_metadata_writes > 0 && abt->total_writes / abt->total_metadata_writes > abt->sla) {
+        dirty = false;
+        for (i=1; i<=abt->degree; ++i) {
+            child = get_child_idx(abt->degree, least_writes_idx, i);
+            if (child < abt->size && abt->cbt->bitset[child]) {
+                dirty = true;
+                hashmap_add(&abt->leaves, child, NULL);
+            }
+        }
+        if (dirty)
+            hashmap_delete(&abt->leaves, least_writes_idx);
+    } else {
+        idx = most_writes_parent_idx;
+        dirty = false;
+        while (idx >= 0) {
+            for (i=1; i<=abt->degree; ++i) {
+                child = get_child_idx(abt->degree, idx, i);
+                hashmap_delete(&abt->leaves, child);
+                if (child < abt->size && abt->cbt->bitset[child]) {
+                    dirty = true;
+                }
+            }
+            if (dirty) {
+                hashmap_add(&abt->leaves, idx);
+                break;
+            } 
+            idx = get_parent_idx(abt->degree, idx);
+        }
+    }
 
     printk(KERN_INFO "most: %d, least: %d", most_writes_parent_idx, least_writes_idx);
 
+exit:
     memset(abt->cbt->metadata_writes, 0, sizeof(int)*abt->cbt->size);
     abt->total_writes = 0;
     abt->total_metadata_writes = 0;

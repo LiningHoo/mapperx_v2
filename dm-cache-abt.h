@@ -23,6 +23,7 @@ struct adaptive_bit_tree {
     int size;
     int total_writes;
     int total_metadata_writes;
+    int sla;
     struct hashmap leaves;
 
     struct delayed_work periodic_adjust_work;
