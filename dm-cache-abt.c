@@ -147,11 +147,13 @@ void test_get_idx_from_block_id(int degree, int nr_blocks, int level_num) {
 
 void abt_periodic_adjust(struct work_struct *work) {
     bool dirty;
-    int i, idx;
+    int i;
     int most_writes_parent_idx, least_writes_idx, child;
     struct adaptive_bit_tree* abt = container_of(work, struct adaptive_bit_tree, periodic_adjust_work);
 
     printk(KERN_INFO "total: %d, metadata: %d", abt->total_writes, abt->total_metadata_writes);
+
+    spin_lock_irq(&abt->cbt->lock);
 
     most_writes_parent_idx = find_most_write_parent_idx(abt);
     least_writes_idx = find_least_write_idx(abt);
@@ -168,27 +170,29 @@ void abt_periodic_adjust(struct work_struct *work) {
         if (dirty)
             hashmap_delete(&abt->leaves, least_writes_idx);
     } else {
-        idx = most_writes_parent_idx;
         dirty = false;
-        while (idx >= 0) {
-            for (i=1; i<=abt->degree; ++i) {
-                child = get_child_idx(abt->degree, idx, i);
-                hashmap_delete(&abt->leaves, child);
-                if (child < abt->size && abt->cbt->bitset[child]) {
-                    dirty = true;
-                }
-            }
-            if (dirty) {
-                hashmap_add(&abt->leaves, idx);
-                break;
-            } 
-            idx = get_parent_idx(abt->degree, idx);
+
+        if (most_writes_parent_idx < 0) {
+            goto next;
         }
+
+        for (i=1; i<=abt->degree; ++i) {
+            child = get_child_idx(abt->degree, most_writes_parent_idx, i);
+            hashmap_delete(&abt->leaves, child);
+            if (child < abt->size && abt->cbt->bitset[child]) {
+                dirty = true;
+            }
+        }
+        if (dirty) {
+            hashmap_add(&abt->leaves, most_writes_parent_idx, NULL);
+        } 
     }
+
+next:
+    spin_unlock_irq(&abt->cbt->lock);
 
     printk(KERN_INFO "most: %d, least: %d", most_writes_parent_idx, least_writes_idx);
 
-exit:
     memset(abt->cbt->metadata_writes, 0, sizeof(int)*abt->cbt->size);
     abt->total_writes = 0;
     abt->total_metadata_writes = 0;
