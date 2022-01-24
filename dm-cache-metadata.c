@@ -78,6 +78,8 @@ struct cache_disk_superblock {
 	__le64 discard_block_size;
 	__le64 discard_nr_blocks;
 
+	__le64 vbt_root;
+
 	__le32 data_block_size;
 	__le32 metadata_block_size;
 	__le32 cache_blocks;
@@ -112,12 +114,14 @@ struct dm_cache_metadata {
 	struct dm_array_info info;
 	struct dm_array_info hint_info;
 	struct dm_disk_bitset discard_info;
+	struct dm_disk_bitset vbt_info;
 
 	struct rw_semaphore root_lock;
 	unsigned long flags;
 	dm_block_t root;
 	dm_block_t hint_root;
 	dm_block_t discard_root;
+	dm_block_t vbt_root;
 
 	sector_t discard_block_size;
 	dm_dblock_t discard_nr_blocks;
@@ -159,6 +163,8 @@ struct dm_cache_metadata {
 	struct dm_array_cursor mapping_cursor;
 	struct dm_array_cursor hint_cursor;
 	struct dm_bitset_cursor dirty_cursor;
+
+	struct adaptive_bit_tree *abt;
 };
 
 /*-------------------------------------------------------------------
@@ -375,6 +381,8 @@ static int __write_initial_superblock(struct dm_cache_metadata *cmd)
 	disk_super->data_block_size = cpu_to_le32(cmd->data_block_size);
 	disk_super->cache_blocks = cpu_to_le32(0);
 
+	disk_super->vbt_root = cpu_to_le64(cmd->vbt_root);
+
 	disk_super->read_hits = cpu_to_le32(0);
 	disk_super->read_misses = cpu_to_le32(0);
 	disk_super->write_hits = cpu_to_le32(0);
@@ -412,6 +420,11 @@ static int __format_metadata(struct dm_cache_metadata *cmd)
 
 	dm_disk_bitset_init(cmd->tm, &cmd->discard_info);
 	r = dm_bitset_empty(&cmd->discard_info, &cmd->discard_root);
+	if (r < 0)
+		goto bad;
+
+	dm_disk_bitset_init(cmd->tm, &cmd->vbt_info);
+	r = dm_bitset_empty(&cmd->vbt_info, &cmd->vbt_root);
 	if (r < 0)
 		goto bad;
 
@@ -501,6 +514,7 @@ static int __open_metadata(struct dm_cache_metadata *cmd)
 	__setup_mapping_info(cmd);
 	dm_disk_bitset_init(cmd->tm, &cmd->dirty_info);
 	dm_disk_bitset_init(cmd->tm, &cmd->discard_info);
+	dm_disk_bitset_init(cmd->tm, &cmd->vbt_info);
 	sb_flags = le32_to_cpu(disk_super->flags);
 	cmd->clean_when_opened = test_bit(CLEAN_SHUTDOWN, &sb_flags);
 	dm_bm_unlock(sblock);
@@ -580,6 +594,7 @@ static void read_superblock_fields(struct dm_cache_metadata *cmd,
 	cmd->version = le32_to_cpu(disk_super->version);
 	cmd->flags = le32_to_cpu(disk_super->flags);
 	cmd->root = le64_to_cpu(disk_super->mapping_root);
+	cmd->vbt_root = le64_to_cpu(disk_super->vbt_root);
 	cmd->hint_root = le64_to_cpu(disk_super->hint_root);
 	cmd->discard_root = le64_to_cpu(disk_super->discard_root);
 	cmd->discard_block_size = le64_to_cpu(disk_super->discard_block_size);
@@ -670,6 +685,11 @@ static int __commit_transaction(struct dm_cache_metadata *cmd,
 	if (r)
 		return r;
 
+	r = dm_bitset_flush(&cmd->vbt_info, cmd->vbt_root,
+				&cmd->vbt_root);
+	if (r)
+		return r;
+
 	r = dm_tm_pre_commit(cmd->tm);
 	if (r < 0)
 		return r;
@@ -691,6 +711,7 @@ static int __commit_transaction(struct dm_cache_metadata *cmd,
 	disk_super->mapping_root = cpu_to_le64(cmd->root);
 	if (separate_dirty_bits(cmd))
 		disk_super->dirty_root = cpu_to_le64(cmd->dirty_root);
+	disk_super->vbt_root = cpu_to_le64(cmd->vbt_root);
 	disk_super->hint_root = cpu_to_le64(cmd->hint_root);
 	disk_super->discard_root = cpu_to_le64(cmd->discard_root);
 	disk_super->discard_block_size = cpu_to_le64(cmd->discard_block_size);
@@ -1108,6 +1129,46 @@ int dm_cache_discard_bitset_resize(struct dm_cache_metadata *cmd,
 	return r;
 }
 
+static int __set_vbt(struct dm_cache_metadata *cmd, int idx)
+{
+	return dm_bitset_set_bit(&cmd->vbt_info, cmd->vbt_root,
+				idx, &cmd->vbt_root);
+}
+
+static int __clear_vbt(struct dm_cache_metadata *cmd, int idx)
+{
+	return dm_bitset_clear_bit(&cmd->vbt_info, cmd->vbt_root,
+				   idx, &cmd->vbt_root);
+}
+
+int dm_cache_vbt_persist_dirty(struct dm_cache_metadata *cmd, int idx)  {
+	int r;
+
+	WRITE_LOCK(cmd);
+	r = __set_vbt(cmd, idx);
+	WRITE_UNLOCK(cmd);
+
+	if (r)
+		return r;
+
+	cmd->changed = true;
+	return 0;
+}
+
+int dm_cache_vbt_persist_clean(struct dm_cache_metadata *cmd, int idx)  {
+	int r;
+
+	WRITE_LOCK(cmd);
+	r = __clear_vbt(cmd, idx);
+	WRITE_UNLOCK(cmd);
+
+	if (r)
+		return r;
+
+	cmd->changed = true;
+	return 0;
+}
+
 static int __set_discard(struct dm_cache_metadata *cmd, dm_dblock_t b)
 {
 	return dm_bitset_set_bit(&cmd->discard_info, cmd->discard_root,
@@ -1346,6 +1407,10 @@ static int __load_mapping_v1(struct dm_cache_metadata *cmd,
 		}
 		if (cmd->clean_when_opened)
 			dirty = flags & M_DIRTY;
+		else {
+			// todo: abt check block dirty
+			dirty = vbt_check_block_dirty(cmd, oblock);
+		}	
 
 		r = fn(context, oblock, to_cblock(cb), dirty,
 		       le32_to_cpu(hint), hints_valid);
@@ -1388,6 +1453,10 @@ static int __load_mapping_v2(struct dm_cache_metadata *cmd,
 		}
 		if (cmd->clean_when_opened)
 			dirty = dm_bitset_cursor_get_value(dirty_cursor);
+		else {
+			// todo: abt check block dirty
+			dirty = vbt_check_block_dirty(cmd, oblock);
+		}
 
 		r = fn(context, oblock, to_cblock(cb), dirty,
 		       le32_to_cpu(hint), hints_valid);
@@ -1813,4 +1882,27 @@ int dm_cache_metadata_abort(struct dm_cache_metadata *cmd)
 	WRITE_UNLOCK(cmd);
 
 	return r;
+}
+
+void dm_cache_metadata_inject_abt(struct dm_cache_metadata *cmd, struct adaptive_bit_tree *abt) {
+	cmd->abt = abt;
+}
+
+bool vbt_check_block_dirty(struct dm_cache_metadata *cmd, int block_id) {
+    bool dirty;
+	int idx;
+
+    idx = get_idx_from_block_id(cmd->abt->degree, block_id, cmd->abt->cbt->level_num);
+    while(idx >= 0) {
+        dm_bitset_test_bit(&cmd->vbt_info, cmd->vbt_root, idx, &cmd->vbt_root, &dirty);
+        if (dirty)
+            return true;
+		idx = get_parent_idx(cmd->abt->degree, idx);
+    }
+
+    return false;
+}
+
+void dm_cache_alloc_vbt_disk_space(struct dm_cache_metadata *cmd, int new_size) {
+	dm_bitset_resize(&cmd->vbt_info, cmd->vbt_root, 0, new_size, false, &cmd->vbt_root);
 }

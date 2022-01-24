@@ -3,15 +3,14 @@
 #include "dm-cache-abt.h"
 
 int get_level_num(int nr_blocks, int degree);
-int get_idx_from_block_id(int degree, int block_id, int level_num);
 void test_get_idx_from_block_id(int degree, int nr_blocks, int level_num);
-int get_parent_idx(int degree, int idx);
 int get_child_idx(int degree, int idx, int nth);
 void abt_persistent_dirty(struct adaptive_bit_tree* abt, int idx);
 void abt_persistent_clean(struct adaptive_bit_tree* abt, int idx);
 void abt_periodic_adjust(struct work_struct *work);
 int find_most_write_parent_idx(struct adaptive_bit_tree* abt);
 int find_least_write_idx(struct adaptive_bit_tree* abt);
+void drop_leaf(struct adaptive_bit_tree* abt, int idx);
 
 struct complete_bit_tree* cbt_create(int degree, int nr_blocks) {
     struct complete_bit_tree* cbt;
@@ -32,13 +31,11 @@ struct complete_bit_tree* cbt_create(int degree, int nr_blocks) {
 void abt_persistent_dirty(struct adaptive_bit_tree* abt, int idx) {
     abt->cbt->metadata_writes[idx] += 1;
     abt->total_metadata_writes += 1;
-    // printk(KERN_INFO "abt presistent dirty, idx=%d", idx);
+    dm_cache_vbt_persist_dirty(abt->cmd, idx);
 }
 
 void abt_persistent_clean(struct adaptive_bit_tree* abt, int idx) {
-    abt->cbt->metadata_writes[idx] += 1;
-    abt->total_metadata_writes += 1;
-    // printk(KERN_INFO "abt presistent clean, idx=%d", idx);
+    dm_cache_vbt_persist_clean(abt->cmd, idx);
 }
 
 void abt_set_dirty(struct adaptive_bit_tree* abt, int block_id) {
@@ -93,7 +90,6 @@ struct adaptive_bit_tree* abt_create(int degree, int nr_blocks) {
     abt->total_metadata_writes = 0;
     abt->sla = 100;
     schedule_delayed_work(&abt->periodic_adjust_work, 1 * HZ);
-    printk(KERN_INFO "abt create finish");
     return abt;
 }
 
@@ -146,7 +142,6 @@ void test_get_idx_from_block_id(int degree, int nr_blocks, int level_num) {
 }
 
 void abt_periodic_adjust(struct work_struct *work) {
-    bool dirty;
     int i;
     int most_writes_parent_idx, least_writes_idx, child;
     struct adaptive_bit_tree* abt = container_of(work, struct adaptive_bit_tree, periodic_adjust_work);
@@ -158,34 +153,31 @@ void abt_periodic_adjust(struct work_struct *work) {
     most_writes_parent_idx = find_most_write_parent_idx(abt);
     least_writes_idx = find_least_write_idx(abt);
 
-    if (abt->total_metadata_writes > 0 && abt->total_writes / abt->total_metadata_writes > abt->sla) {
-        dirty = false;
+    if (abt->total_metadata_writes <= 0) 
+        goto next;
+
+    if (abt->total_writes / abt->total_metadata_writes > abt->sla) {
         for (i=1; i<=abt->degree; ++i) {
             child = get_child_idx(abt->degree, least_writes_idx, i);
-            if (child < abt->size && abt->cbt->bitset[child]) {
-                dirty = true;
+            if (child < abt->size) {
                 hashmap_add(&abt->leaves, child, NULL);
+                abt_persistent_dirty(abt, child);
             }
         }
-        if (dirty)
-            hashmap_delete(&abt->leaves, least_writes_idx);
-    } else {
-        dirty = false;
 
+        hashmap_delete(&abt->leaves, least_writes_idx);
+        abt_persistent_clean(abt, least_writes_idx);
+    } else {
         if (most_writes_parent_idx < 0) {
             goto next;
         }
 
         for (i=1; i<=abt->degree; ++i) {
             child = get_child_idx(abt->degree, most_writes_parent_idx, i);
-            hashmap_delete(&abt->leaves, child);
-            if (child < abt->size && abt->cbt->bitset[child]) {
-                dirty = true;
-            }
+            drop_leaf(abt, child);
         }
-        if (dirty) {
-            hashmap_add(&abt->leaves, most_writes_parent_idx, NULL);
-        } 
+        hashmap_add(&abt->leaves, most_writes_parent_idx, NULL);
+        abt_persistent_dirty(abt, most_writes_parent_idx);
     }
 
 next:
@@ -238,3 +230,17 @@ int find_least_write_idx(struct adaptive_bit_tree* abt) {
 
     return idx;
 }
+
+void drop_leaf(struct adaptive_bit_tree* abt, int idx) {
+    int i;
+    int child;
+
+    if (idx >= abt->size) return;
+    hashmap_delete(&abt->leaves, idx);
+    abt_persistent_clean(abt, idx);
+    for (i=1; i<=abt->degree; ++i) {
+        child = get_child_idx(abt->degree, idx, i);
+        drop_leaf(abt, child);
+    }
+}
+

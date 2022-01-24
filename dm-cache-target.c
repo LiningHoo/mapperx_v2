@@ -2772,6 +2772,8 @@ static int cache_create(struct cache_args *ca, struct cache **result)
 	prevent_background_work(cache);
 
 	cache->abt = abt_create(4, cache->origin_blocks);
+	cache->abt->cmd = cache->cmd;
+	dm_cache_alloc_vbt_disk_space(cache->cmd, cache->abt->size);
 
 	*result = cache;
 	return 0;
@@ -3182,6 +3184,9 @@ static int cache_preresume(struct dm_target *ti)
 		if (r)
 			return r;
 	}
+
+	// todo: dm cache metadata set abt
+	dm_cache_metadata_inject_abt(cache->cmd, cache->abt);
 
 	if (!cache->loaded_mappings) {
 		r = dm_cache_load_mappings(cache->cmd, cache->policy,

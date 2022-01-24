@@ -5,6 +5,7 @@
 #include <linux/workqueue.h>
 
 #include "dm-cache-hashmap.h"
+#include "dm-cache-metadata.h"
 
 struct complete_bit_tree {
     bool *bitset;
@@ -25,6 +26,7 @@ struct adaptive_bit_tree {
     int total_metadata_writes;
     int sla;
     struct hashmap leaves;
+    struct dm_cache_metadata *cmd;
 
     struct delayed_work periodic_adjust_work;
 };
@@ -33,5 +35,7 @@ struct adaptive_bit_tree* abt_create(int degree, int nr_blocks);
 void abt_set_dirty(struct adaptive_bit_tree* abt, int block_id);
 void abt_set_clean(struct adaptive_bit_tree* abt, int block_id);
 void abt_destroy(struct adaptive_bit_tree* abt);
+int get_idx_from_block_id(int degree, int block_id, int level_num);
+int get_parent_idx(int degree, int idx);
 
 #endif

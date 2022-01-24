@@ -10,6 +10,7 @@
 #include "dm-cache-block-types.h"
 #include "dm-cache-policy-internal.h"
 #include "persistent-data/dm-space-map-metadata.h"
+#include "dm-cache-abt.h"
 
 /*----------------------------------------------------------------*/
 
@@ -149,5 +150,11 @@ void dm_cache_metadata_set_read_write(struct dm_cache_metadata *cmd);
 int dm_cache_metadata_abort(struct dm_cache_metadata *cmd);
 
 /*----------------------------------------------------------------*/
+
+bool vbt_check_block_dirty(struct dm_cache_metadata *cmd, int block_id);
+void dm_cache_metadata_inject_abt(struct dm_cache_metadata *cmd, struct adaptive_bit_tree *abt);
+void dm_cache_alloc_vbt_disk_space(struct dm_cache_metadata *cmd, int new_size);
+int dm_cache_vbt_persist_dirty(struct dm_cache_metadata *cmd, int idx);
+int dm_cache_vbt_persist_clean(struct dm_cache_metadata *cmd, int idx);
 
 #endif /* DM_CACHE_METADATA_H */
