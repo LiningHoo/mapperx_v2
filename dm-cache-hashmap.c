@@ -16,8 +16,10 @@ void hashmap_destroy(struct hashmap* map) {
     vfree(map->hlists);
 }
 
-void hashmap_add(struct hashmap* map, int key, void* data) {
+void hashmap_add(struct hashmap* map, int key, uint64_t data) {
     struct hashmap_value* value = (struct hashmap_value*)vmalloc(sizeof(struct hashmap_value));
+
+    hashmap_delete(map, key);
     value->key = key;
     value->data = data;
     hlist_add_head(&value->node, &map->hlists[get_bucket(key, map->bucket_num)]);
@@ -70,4 +72,17 @@ bool hashmap_delete(struct hashmap* map, int key) {
     }
 
     return false;
+}
+
+int hashmap_getval(struct hashmap* map, int key, uint64_t *result) {
+    struct hashmap_value* obj;
+
+    hlist_for_each_entry(obj, &map->hlists[get_bucket(key, map->bucket_num)], node) {
+        if(obj->key == key) {
+            *result = obj->data;
+            return 0;
+        }
+    }
+
+    return -ENODATA;
 }

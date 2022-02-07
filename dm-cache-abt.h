@@ -7,6 +7,9 @@
 #include "dm-cache-hashmap.h"
 #include "dm-cache-metadata.h"
 
+static const uint64_t ABT_LEAF_CLEAN = 0;
+static const uint64_t ABT_LEAF_DIRTY = 1; 
+
 struct complete_bit_tree {
     bool *bitset;
     int degree;

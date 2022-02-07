@@ -2774,6 +2774,7 @@ static int cache_create(struct cache_args *ca, struct cache **result)
 	cache->abt = abt_create(4, cache->origin_blocks);
 	cache->abt->cmd = cache->cmd;
 	dm_cache_alloc_vbt_disk_space(cache->cmd, cache->abt->size);
+	dm_cache_metadata_inject_abt(cache->cmd, cache->abt);
 
 	*result = cache;
 	return 0;

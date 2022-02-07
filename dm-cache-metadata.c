@@ -5,6 +5,7 @@
  */
 
 #include "dm-cache-metadata.h"
+#include "dm-cache-abt.h"
 
 #include "persistent-data/dm-array.h"
 #include "persistent-data/dm-bitset.h"
