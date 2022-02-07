@@ -158,20 +158,21 @@ void abt_periodic_adjust(struct work_struct *work) {
     most_writes_parent_idx = find_most_write_parent_idx(abt);
     least_writes_idx = find_least_write_idx(abt);
 
-    if (abt->total_metadata_writes <= 0) 
+    if (abt->total_writes == 0 && abt->total_metadata_writes == 0)
         goto next;
 
-    if (abt->total_writes / abt->total_metadata_writes > abt->sla) {
+    if (abt->total_metadata_writes <= 0 || abt->total_writes / abt->total_metadata_writes > abt->sla) {
         for (i=1; i<=abt->degree; ++i) {
             child = get_child_idx(abt->degree, least_writes_idx, i);
             if (child < abt->size) {
                 hashmap_add(&abt->leaves, child, ABT_LEAF_CLEAN);
-                abt_persistent_dirty(abt, child);
+                if (abt->cbt->bitset[child])
+                    abt_persistent_dirty(abt, child);
             }
         }
 
         hashmap_delete(&abt->leaves, least_writes_idx);
-        abt_persistent_clean(abt, least_writes_idx);
+        dm_cache_vbt_persist_clean(abt->cmd, least_writes_idx);
     } else {
         if (most_writes_parent_idx < 0) {
             goto next;
@@ -181,7 +182,6 @@ void abt_periodic_adjust(struct work_struct *work) {
             child = get_child_idx(abt->degree, most_writes_parent_idx, i);
             drop_leaf(abt, child);
         }
-        hashmap_add(&abt->leaves, most_writes_parent_idx, ABT_LEAF_CLEAN);
         abt_persistent_dirty(abt, most_writes_parent_idx);
     }
 
@@ -202,14 +202,14 @@ void abt_destroy(struct adaptive_bit_tree* abt) {
 
 int find_most_write_parent_idx(struct adaptive_bit_tree* abt) {
     int i, parent_idx;
-    int most_writes = 0, idx = -1;
+    int most_writes = INT_MIN, idx = -1;
     struct hashmap_value* obj;
 
     for (i=0; i<abt->leaves.bucket_num; ++i) {
         hlist_for_each_entry(obj, &abt->leaves.hlists[i], node) {
             parent_idx = get_parent_idx(abt->degree, obj->key);
             if (parent_idx < 0) return -1;
-            if (abt->cbt->metadata_writes[parent_idx] >= most_writes) {
+            if (abt->cbt->metadata_writes[parent_idx] > most_writes) {
                 most_writes = abt->cbt->metadata_writes[parent_idx];
                 idx = parent_idx;
             }
@@ -226,7 +226,7 @@ int find_least_write_idx(struct adaptive_bit_tree* abt) {
 
     for (i=0; i<abt->leaves.bucket_num; ++i) {
         hlist_for_each_entry(obj, &abt->leaves.hlists[i], node) {
-            if (abt->cbt->metadata_writes[obj->key] <= least_writes) {
+            if (abt->cbt->metadata_writes[obj->key] < least_writes) {
                 least_writes = abt->cbt->metadata_writes[obj->key];
                 idx = obj->key;
             }
@@ -242,7 +242,7 @@ void drop_leaf(struct adaptive_bit_tree* abt, int idx) {
 
     if (idx >= abt->size) return;
     hashmap_delete(&abt->leaves, idx);
-    abt_persistent_clean(abt, idx);
+    dm_cache_vbt_persist_clean(abt, idx);
     for (i=1; i<=abt->degree; ++i) {
         child = get_child_idx(abt->degree, idx, i);
         drop_leaf(abt, child);
