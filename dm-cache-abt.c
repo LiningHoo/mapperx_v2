@@ -49,7 +49,7 @@ void abt_set_dirty(struct adaptive_bit_tree* abt, int block_id) {
     idx = get_idx_from_block_id(abt->cbt->degree, block_id, abt->cbt->level_num);
     while(idx >= 0) {
         abt->cbt->bitset[idx] = true;
-        if (!check_abt_leaf_dirty(abt, idx)) {
+        if (hashmap_exists(&abt->leaves, idx) && !check_abt_leaf_dirty(abt, idx)) {
             abt_persistent_dirty(abt, idx);
         }
         idx = get_parent_idx(abt->cbt->degree, idx);
@@ -62,7 +62,7 @@ void abt_set_clean(struct adaptive_bit_tree* abt, int block_id) {
     idx = get_idx_from_block_id(abt->cbt->degree, block_id, abt->cbt->level_num);
     while(idx >= 0) {
         abt->cbt->bitset[idx] = false;
-        if (check_abt_leaf_dirty(abt, idx)) {
+        if (hashmap_exists(&abt->leaves, idx) && check_abt_leaf_dirty(abt, idx)) {
             abt_persistent_clean(abt, idx);
         }
         idx = get_parent_idx(abt->cbt->degree, idx);
